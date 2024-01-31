@@ -15,6 +15,7 @@ class I18nAuto:
             language = locale.getdefaultlocale()[
                 0
             ]  # getlocale can't identify the system's language ((None, None))
+            language = "zh_CN" #中文
         if not os.path.exists(f"./i18n/locale/{language}.json"):
             language = "en_US"
         self.language = language
