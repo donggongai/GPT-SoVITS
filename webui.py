@@ -117,6 +117,7 @@ def change_choices():
 p_label=None
 p_uvr5=None
 p_asr=None
+p_denoise=None
 p_tts_inference=None
 
 def kill_proc_tree(pid, including_parent=True):  
@@ -192,20 +193,27 @@ def change_tts_inference(if_tts,bert_path,cnhubert_base_path,gpu_number,gpt_path
         p_tts_inference=None
         yield i18n("TTS推理进程已关闭")
 
-
-def open_asr(asr_inp_dir):
+from tools.asr.config import asr_dict
+def open_asr(asr_inp_dir, asr_opt_dir, asr_model, asr_model_size, asr_lang):
     global p_asr
     if(p_asr==None):
         asr_inp_dir=my_utils.clean_path(asr_inp_dir)
-        cmd = '"%s" tools/damo_asr/cmd-asr.py "%s"'%(python_exec,asr_inp_dir)
+        cmd = f'"{python_exec}" tools/asr/{asr_dict[asr_model]["path"]}'
+        cmd += f' -i "{asr_inp_dir}"'
+        cmd += f' -o "{asr_opt_dir}"'
+        cmd += f' -s {asr_model_size}'
+        cmd += f' -l {asr_lang}'
+        cmd += " -p %s"%("float16"if is_half==True else "float32")
+
         yield "ASR任务开启：%s"%cmd,{"__type__":"update","visible":False},{"__type__":"update","visible":True}
         print(cmd)
         p_asr = Popen(cmd, shell=True)
         p_asr.wait()
         p_asr=None
-        yield "ASR任务完成",{"__type__":"update","visible":True},{"__type__":"update","visible":False}
+        yield f"ASR任务完成, 查看终端进行下一步",{"__type__":"update","visible":True},{"__type__":"update","visible":False}
     else:
         yield "已有正在进行的ASR任务，需先终止才能开启下一次任务",{"__type__":"update","visible":False},{"__type__":"update","visible":True}
+        # return None
 
 def close_asr():
     global p_asr
@@ -213,6 +221,29 @@ def close_asr():
         kill_process(p_asr.pid)
         p_asr=None
     return "已终止ASR进程",{"__type__":"update","visible":True},{"__type__":"update","visible":False}
+def open_denoise(denoise_inp_dir, denoise_opt_dir):
+    global p_denoise
+    if(p_denoise==None):
+        denoise_inp_dir=my_utils.clean_path(denoise_inp_dir)
+        denoise_opt_dir=my_utils.clean_path(denoise_opt_dir)
+        cmd = '"%s" tools/cmd-denoise.py -i "%s" -o "%s" -p %s'%(python_exec,denoise_inp_dir,denoise_opt_dir,"float16"if is_half==True else "float32")
+
+        yield "语音降噪任务开启：%s"%cmd,{"__type__":"update","visible":False},{"__type__":"update","visible":True}
+        print(cmd)
+        p_denoise = Popen(cmd, shell=True)
+        p_denoise.wait()
+        p_denoise=None
+        yield f"语音降噪任务完成, 查看终端进行下一步",{"__type__":"update","visible":True},{"__type__":"update","visible":False}
+    else:
+        yield "已有正在进行的语音降噪任务，需先终止才能开启下一次任务",{"__type__":"update","visible":False},{"__type__":"update","visible":True}
+        # return None
+
+def close_denoise():
+    global p_denoise
+    if(p_denoise!=None):
+        kill_process(p_denoise.pid)
+        p_denoise=None
+    return "已终止语音降噪进程",{"__type__":"update","visible":True},{"__type__":"update","visible":False}
 
 p_train_SoVITS=None
 def open1Ba(batch_size,total_epoch,exp_name,text_low_lr_rate,if_save_latest,if_save_every_weights,save_every_epoch,gpu_numbers1Ba,pretrained_s2G,pretrained_s2D):
@@ -259,7 +290,7 @@ def close1Ba():
     return "已终止SoVITS训练",{"__type__":"update","visible":True},{"__type__":"update","visible":False}
 
 p_train_GPT=None
-def open1Bb(batch_size,total_epoch,exp_name,if_save_latest,if_save_every_weights,save_every_epoch,gpu_numbers,pretrained_s1):
+def open1Bb(batch_size,total_epoch,exp_name,if_dpo,if_save_latest,if_save_every_weights,save_every_epoch,gpu_numbers,pretrained_s1):
     global p_train_GPT
     if(p_train_GPT==None):
         with open("GPT_SoVITS/configs/s1longer.yaml")as f:
@@ -276,6 +307,7 @@ def open1Bb(batch_size,total_epoch,exp_name,if_save_latest,if_save_every_weights
         data["train"]["save_every_n_epoch"]=save_every_epoch
         data["train"]["if_save_every_weights"]=if_save_every_weights
         data["train"]["if_save_latest"]=if_save_latest
+        data["train"]["if_dpo"]=if_dpo
         data["train"]["half_weights_save_dir"]=GPT_weight_root
         data["train"]["exp_name"]=exp_name
         data["train_semantic_path"]="%s/6-name2semantic.tsv"%s1_dir
@@ -642,6 +674,11 @@ with gr.Blocks(title="GPT-SoVITS WebUI") as app:
         value=
             i18n("本软件以MIT协议开源, 作者不对软件具备任何控制力, 使用软件者、传播软件导出的声音者自负全责. <br>如不认可该条款, 则不能使用或引用软件包内任何代码和文件. 详见根目录<b>LICENSE</b>.")
     )
+    gr.Markdown(
+        value=
+            i18n("中文教程文档：https://www.yuque.com/baicaigongchang1145haoyuangong/ib3g1e")
+    )
+
     with gr.Tabs():
         with gr.TabItem(i18n("0-前置数据集获取工具")):#提前随机切片防止uvr5爆内存->uvr5->slicer->asr->打标
             gr.Markdown(value=i18n("0a-UVR5人声伴奏分离&去混响去延迟工具"))
@@ -665,16 +702,60 @@ with gr.Blocks(title="GPT-SoVITS WebUI") as app:
                     alpha=gr.Slider(minimum=0,maximum=1,step=0.05,label=i18n("alpha_mix:混多少比例归一化后音频进来"),value=0.25,interactive=True)
                     n_process=gr.Slider(minimum=1,maximum=n_cpu,step=1,label=i18n("切割使用的进程数"),value=4,interactive=True)
                     slicer_info = gr.Textbox(label=i18n("语音切割进程输出信息"))
+            gr.Markdown(value=i18n("0bb-语音降噪工具"))
+            with gr.Row():
+                open_denoise_button = gr.Button(i18n("开启语音降噪"), variant="primary",visible=True)
+                close_denoise_button = gr.Button(i18n("终止语音降噪进程"), variant="primary",visible=False)
+                denoise_input_dir=gr.Textbox(label=i18n("降噪音频文件输入文件夹"),value="")
+                denoise_output_dir=gr.Textbox(label=i18n("降噪结果输出文件夹"),value="output/denoise_opt")
+                denoise_info = gr.Textbox(label=i18n("语音降噪进程输出信息"))
             gr.Markdown(value=i18n("0c-中文批量离线ASR工具"))
             with gr.Row():
                 open_asr_button = gr.Button(i18n("开启离线批量ASR"), variant="primary",visible=True)
                 close_asr_button = gr.Button(i18n("终止ASR进程"), variant="primary",visible=False)
-                asr_inp_dir = gr.Textbox(
-                    label=i18n("批量ASR(中文only)输入文件夹路径"),
-                    value="D:\\RVC1006\\GPT-SoVITS\\raw\\xxx",
-                    interactive=True,
-                )
-                asr_info = gr.Textbox(label=i18n("ASR进程输出信息"))
+                with gr.Column():
+                    with gr.Row():
+                        asr_inp_dir = gr.Textbox(
+                            label=i18n("输入文件夹路径"),
+                            value="D:\\GPT-SoVITS\\raw\\xxx",
+                            interactive=True,
+                        )
+                        asr_opt_dir = gr.Textbox(
+                            label       = i18n("输出文件夹路径"),
+                            value       = "output/asr_opt",
+                            interactive = True,
+                        )
+                    with gr.Row():
+                        asr_model = gr.Dropdown(
+                            label       = i18n("ASR 模型"),
+                            choices     = list(asr_dict.keys()),
+                            interactive = True,
+                            value="达摩 ASR (中文)"
+                        )
+                        asr_size = gr.Dropdown(
+                            label       = i18n("ASR 模型尺寸"),
+                            choices     = ["large"],
+                            interactive = True,
+                            value="large"
+                        )
+                        asr_lang = gr.Dropdown(
+                            label       = i18n("ASR 语言设置"),
+                            choices     = ["zh"],
+                            interactive = True,
+                            value="zh"
+                        )
+                    with gr.Row():
+                        asr_info = gr.Textbox(label=i18n("ASR进程输出信息"))
+
+                def change_lang_choices(key): #根据选择的模型修改可选的语言
+                    # return gr.Dropdown(choices=asr_dict[key]['lang'])
+                    return {"__type__": "update", "choices": asr_dict[key]['lang'],"value":asr_dict[key]['lang'][0]}
+                def change_size_choices(key): # 根据选择的模型修改可选的模型尺寸
+                    # return gr.Dropdown(choices=asr_dict[key]['size'])
+                    return {"__type__": "update", "choices": asr_dict[key]['size']}
+                asr_model.change(change_lang_choices, [asr_model], [asr_lang])
+                asr_model.change(change_size_choices, [asr_model], [asr_size])
+                
             gr.Markdown(value=i18n("0d-语音文本校对标注工具"))
             with gr.Row():
                 if_label = gr.Checkbox(label=i18n("是否开启打标WebUI"),show_label=True)
@@ -686,10 +767,13 @@ with gr.Blocks(title="GPT-SoVITS WebUI") as app:
                 label_info = gr.Textbox(label=i18n("打标工具进程输出信息"))
             if_label.change(change_label, [if_label,path_list], [label_info])
             if_uvr5.change(change_uvr5, [if_uvr5], [uvr5_info])
-            open_asr_button.click(open_asr, [asr_inp_dir], [asr_info,open_asr_button,close_asr_button])
+            open_asr_button.click(open_asr, [asr_inp_dir, asr_opt_dir, asr_model, asr_size, asr_lang], [asr_info,open_asr_button,close_asr_button])
             close_asr_button.click(close_asr, [], [asr_info,open_asr_button,close_asr_button])
             open_slicer_button.click(open_slice, [slice_inp_path,slice_opt_root,threshold,min_length,min_interval,hop_size,max_sil_kept,_max,alpha,n_process], [slicer_info,open_slicer_button,close_slicer_button])
             close_slicer_button.click(close_slice, [], [slicer_info,open_slicer_button,close_slicer_button])
+            open_denoise_button.click(open_denoise, [denoise_input_dir,denoise_output_dir], [denoise_info,open_denoise_button,close_denoise_button])
+            close_denoise_button.click(close_denoise, [], [denoise_info,open_denoise_button,close_denoise_button])
+
         with gr.TabItem(i18n("1-GPT-SoVITS-TTS")):
             with gr.Row():
                 exp_name = gr.Textbox(label=i18n("*实验/模型名"), value="xxx", interactive=True)
@@ -705,7 +789,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI") as app:
                         label=i18n("*训练集音频文件目录"),
                         # value=r"D:\RVC1006\GPT-SoVITS\raw\xxx",
                         interactive=True,
-                        placeholder=i18n("填切割后音频所在目录！读取的音频文件完整路径=该目录-拼接-list文件里波形对应的文件名（不是全路径）。")
+                        placeholder=i18n("填切割后音频所在目录！读取的音频文件完整路径=该目录-拼接-list文件里波形对应的文件名（不是全路径）。如果留空则使用.list文件里的绝对全路径。")
                     )
                 gr.Markdown(value=i18n("1Aa-文本内容"))
                 with gr.Row():
@@ -758,6 +842,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI") as app:
                 with gr.Row():
                     batch_size1Bb = gr.Slider(minimum=1,maximum=40,step=1,label=i18n("每张显卡的batch_size"),value=default_batch_size,interactive=True)
                     total_epoch1Bb = gr.Slider(minimum=2,maximum=50,step=1,label=i18n("总训练轮数total_epoch"),value=15,interactive=True)
+                    if_dpo = gr.Checkbox(label=i18n("是否开启dpo训练选项(实验性)"), value=False, interactive=True, show_label=True)
                     if_save_latest1Bb = gr.Checkbox(label=i18n("是否仅保存最新的ckpt文件以节省硬盘空间"), value=True, interactive=True, show_label=True)
                     if_save_every_weights1Bb = gr.Checkbox(label=i18n("是否在每次保存时间点将最终小模型保存至weights文件夹"), value=True, interactive=True, show_label=True)
                     save_every_epoch1Bb = gr.Slider(minimum=1,maximum=50,step=1,label=i18n("保存频率save_every_epoch"),value=5,interactive=True)
@@ -768,7 +853,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI") as app:
                     info1Bb=gr.Textbox(label=i18n("GPT训练进程输出信息"))
             button1Ba_open.click(open1Ba, [batch_size,total_epoch,exp_name,text_low_lr_rate,if_save_latest,if_save_every_weights,save_every_epoch,gpu_numbers1Ba,pretrained_s2G,pretrained_s2D], [info1Ba,button1Ba_open,button1Ba_close])
             button1Ba_close.click(close1Ba, [], [info1Ba,button1Ba_open,button1Ba_close])
-            button1Bb_open.click(open1Bb, [batch_size1Bb,total_epoch1Bb,exp_name,if_save_latest1Bb,if_save_every_weights1Bb,save_every_epoch1Bb,gpu_numbers1Bb,pretrained_s1],   [info1Bb,button1Bb_open,button1Bb_close])
+            button1Bb_open.click(open1Bb, [batch_size1Bb,total_epoch1Bb,exp_name,if_dpo,if_save_latest1Bb,if_save_every_weights1Bb,save_every_epoch1Bb,gpu_numbers1Bb,pretrained_s1],   [info1Bb,button1Bb_open,button1Bb_close])
             button1Bb_close.click(close1Bb, [], [info1Bb,button1Bb_open,button1Bb_close])
             with gr.TabItem(i18n("1C-推理")):
                 gr.Markdown(value=i18n("选择训练完存放在SoVITS_weights和GPT_weights下的模型。默认的一个是底模，体验5秒Zero Shot TTS用。"))
